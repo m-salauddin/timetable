@@ -20,6 +20,8 @@ from django.contrib import admin
 from django.urls import path, include
 from user_api.views import first_page
 
+from django.contrib.staticfiles.urls import staticfiles_urlpatterns
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     
@@ -29,6 +31,8 @@ urlpatterns = [
     
     path('api/academic/', include('academic.urls')), 
 ]
+
+urlpatterns += staticfiles_urlpatterns() 
 
 
 

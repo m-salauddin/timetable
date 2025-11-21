@@ -12,6 +12,8 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 from datetime import timedelta
+import dj_database_url
+import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -26,7 +28,7 @@ SECRET_KEY = 'django-insecure-72$ampd1y@9d80rp860jzov0&!hf9dl%$xwp%(qq95qj^3sh4=
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["*"]
 
 
 # Application definition
@@ -97,16 +99,24 @@ WSGI_APPLICATION = 'Class_Routine.wsgi.application'
 
 
 
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': 'routine_project',       #  database name
+#         'USER': 'postgres',       #  PostgreSQL username
+#         'PASSWORD': '168315',  #  PostgreSQL password
+#         'HOST': 'localhost',      # or IP address if remote
+#         'PORT': '5432',           # default PostgreSQL port
+#     }
+# }
+
+
+
+
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'routine_project',       #  database name
-        'USER': 'postgres',       #  PostgreSQL username
-        'PASSWORD': '168315',  #  PostgreSQL password
-        'HOST': 'localhost',      # or IP address if remote
-        'PORT': '5432',           # default PostgreSQL port
-    }
+    "default": dj_database_url.parse(os.environ.get("DATABASE_URL"))
 }
+
 
 
 
