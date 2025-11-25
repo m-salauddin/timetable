@@ -59,6 +59,10 @@ class RoutineEntrySerializer(serializers.ModelSerializer):
     
     start_time = serializers.TimeField(source='time_slot.start_time', read_only=True)
     end_time = serializers.TimeField(source='time_slot.end_time', read_only=True)
+    
+    
+    credits = serializers.IntegerField(source='course.credits', read_only=True)
+
 
     class Meta:
         model = RoutineEntry
@@ -69,6 +73,7 @@ class RoutineEntrySerializer(serializers.ModelSerializer):
             'end_time',
             'course_name', 
             'course_code', 
+            'credits',       
             'teacher_name', 
             'department_name', 
             'semester_name', 
