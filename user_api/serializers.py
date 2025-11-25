@@ -100,6 +100,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
     
     department_name = serializers.CharField(source='department.name', read_only=True, default=None)
     semester_name = serializers.CharField(source='semester.name', read_only=True, default=None)
+    
+    name = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -107,10 +109,17 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'id', 
             'username', 
             'email', 
-            'first_name', 
-            'last_name', 
+            'name',  
             'role', 
             'department_name', 
             'semester_name',
             'date_joined'
         ]
+        
+    def get_name(self, obj):
+        if obj.first_name or obj.last_name:
+            return f"{obj.first_name} {obj.last_name}".strip()
+        return obj.username
+        
+        
+    

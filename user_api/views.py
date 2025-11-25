@@ -82,3 +82,23 @@ class UserProfileView(APIView):
     def get(self, request):
         serializer = UserProfileSerializer(request.user)
         return Response(serializer.data)
+    
+    
+    
+
+from rest_framework import generics
+from .serializers import UserProfileSerializer
+
+class UserListView(generics.ListAPIView):
+    serializer_class = UserProfileSerializer
+    permission_classes = [IsAuthenticated, IsAdminUser] 
+
+    def get_queryset(self):
+        
+        queryset = User.objects.all()
+        
+        role = self.request.query_params.get('role')
+        if role:
+            queryset = queryset.filter(role=role)
+            
+        return queryset
