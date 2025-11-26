@@ -1,6 +1,11 @@
 from .models import Course, TimeSlot, RoutineEntry
 import random
 
+from django.db import transaction
+from django.db.models import F
+from collections import Counter
+
+
 class ScheduleConstraint:
     def __init__(self, days):
         self.teacher_occupied = set()     
