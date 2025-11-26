@@ -1,6 +1,5 @@
 from .models import Course, TimeSlot, RoutineEntry
 import random
-
 from django.db import transaction
 from django.db.models import F
 from collections import Counter
@@ -8,37 +7,43 @@ from collections import Counter
 
 class ScheduleConstraint:
     def __init__(self, days):
-        self.teacher_occupied = set()     
-        self.room_occupied = set()        
-        self.batch_occupied = set()        
-        self.course_daily_tracker = set()  
+        self.teacher_occupied = set()      # (day, slot_id, teacher_id)
+        self.room_occupied = set()         # (day, slot_id, room_number)
+        self.batch_occupied = set()        # (day, slot_id, dept_id, sem_id)
+        
+    
+        self.course_daily_tracker = set()  # (course_id, day)
+
+   
+        self.teacher_batch_interaction = {}
+
         self.day_loads = {day: 0 for day in days}
 
-    
-        self.teacher_batch_slots = {}
-
-    def get_teacher_batch_slots(self, day, course):
-      
-        if not course.teacher:
-            return 0
-        key = (day, course.teacher.id, course.department.id, course.semester.id)
-        return self.teacher_batch_slots.get(key, 0)
-
     def is_conflict(self, day, slot, course):
-    
+     
         if course.teacher and (day, slot.id, course.teacher.id) in self.teacher_occupied:
             return True
-        
-        
         if (day, slot.id, course.room_number) in self.room_occupied:
             return True
-        
         if (day, slot.id, course.department.id, course.semester.id) in self.batch_occupied:
             return True
 
-        if course.course_type == 'Theory':
-            if (course.id, day) in self.course_daily_tracker:
-                return True
+  
+        if (course.id, day) in self.course_daily_tracker:
+            return True
+
+  
+        if course.teacher:
+       
+            tb_key = (day, course.teacher.id, course.department.id, course.semester.id)
+            
+            if tb_key in self.teacher_batch_interaction:
+                existing_course_id = self.teacher_batch_interaction[tb_key]
+
+                if existing_course_id != course.id:
+                    return True  
+                
+                
 
         return False
 
@@ -46,14 +51,15 @@ class ScheduleConstraint:
         if course.teacher:
             self.teacher_occupied.add((day, slot.id, course.teacher.id))
             
-            key = (day, course.teacher.id, course.department.id, course.semester.id)
-            self.teacher_batch_slots[key] = self.teacher_batch_slots.get(key, 0) + 1
+           
+            tb_key = (day, course.teacher.id, course.department.id, course.semester.id)
+            self.teacher_batch_interaction[tb_key] = course.id
 
         self.room_occupied.add((day, slot.id, course.room_number))
         self.batch_occupied.add((day, slot.id, course.department.id, course.semester.id))
         
-        if course.course_type == 'Theory':
-            self.course_daily_tracker.add((course.id, day))
+     
+        self.course_daily_tracker.add((course.id, day))
             
         self.day_loads[day] += 1
 
@@ -65,12 +71,13 @@ def prepare_prioritized_sessions(courses):
         priority = 1 
 
         if course.course_type == 'Lab':
-            
+         
             while remaining_credits >= 2:
                 all_sessions.append({'course': course, 'duration': 2, 'priority': priority})
                 remaining_credits -= 2
-                priority += 1
+                priority += 1 
             
+          
             if remaining_credits > 0: 
                 all_sessions.append({'course': course, 'duration': 1, 'priority': priority})
         else:
@@ -102,28 +109,26 @@ def generate_routine_algorithm():
         priority = session['priority']
         assigned = False
         
+    
         sorted_days = sorted(days, key=lambda d: constraints.day_loads[d])
 
         for day in sorted_days:
             if assigned: break
-
-            current_slots = constraints.get_teacher_batch_slots(day, course)
-            if current_slots + duration > 2:
-                continue 
-
+            
+     
             for i in range(len(time_slots) - duration + 1):
                 slots_to_check = []
                 conflict = False
                 
                 for j in range(duration):
                     slot = time_slots[i + j]
-                    
+             
                     if constraints.is_conflict(day, slot, course):
                         conflict = True; break
                     slots_to_check.append(slot)
                 
                 if not conflict:
-                    
+                  
                     for slot in slots_to_check:
                         constraints.assign(day, slot, course)
                         RoutineEntry.objects.create(day=day, time_slot=slot, course=course)
@@ -140,8 +145,154 @@ def generate_routine_algorithm():
         "scheduled": scheduled_count,
         "dropped": len(dropped_sessions),
         "dropped_details": dropped_sessions,
-        "message": "Routine generated. Teacher max 2 periods per batch/day enforced."
+        "message": "Routine generated. One Teacher-Batch interaction per day enforced."
     }
+
+
+# from .models import Course, TimeSlot, RoutineEntry
+# import random
+
+# from django.db import transaction
+# from django.db.models import F
+# from collections import Counter
+
+
+# class ScheduleConstraint:
+#     def __init__(self, days):
+#         self.teacher_occupied = set()     
+#         self.room_occupied = set()        
+#         self.batch_occupied = set()        
+#         self.course_daily_tracker = set()  
+#         self.day_loads = {day: 0 for day in days}
+
+    
+#         self.teacher_batch_slots = {}
+
+#     def get_teacher_batch_slots(self, day, course):
+      
+#         if not course.teacher:
+#             return 0
+#         key = (day, course.teacher.id, course.department.id, course.semester.id)
+#         return self.teacher_batch_slots.get(key, 0)
+
+#     def is_conflict(self, day, slot, course):
+    
+#         if course.teacher and (day, slot.id, course.teacher.id) in self.teacher_occupied:
+#             return True
+        
+        
+#         if (day, slot.id, course.room_number) in self.room_occupied:
+#             return True
+        
+#         if (day, slot.id, course.department.id, course.semester.id) in self.batch_occupied:
+#             return True
+
+#         if course.course_type == 'Theory':
+#             if (course.id, day) in self.course_daily_tracker:
+#                 return True
+
+#         return False
+
+#     def assign(self, day, slot, course):
+#         if course.teacher:
+#             self.teacher_occupied.add((day, slot.id, course.teacher.id))
+            
+#             key = (day, course.teacher.id, course.department.id, course.semester.id)
+#             self.teacher_batch_slots[key] = self.teacher_batch_slots.get(key, 0) + 1
+
+#         self.room_occupied.add((day, slot.id, course.room_number))
+#         self.batch_occupied.add((day, slot.id, course.department.id, course.semester.id))
+        
+#         if course.course_type == 'Theory':
+#             self.course_daily_tracker.add((course.id, day))
+            
+#         self.day_loads[day] += 1
+
+
+# def prepare_prioritized_sessions(courses):
+#     all_sessions = []
+#     for course in courses:
+#         remaining_credits = course.credits
+#         priority = 1 
+
+#         if course.course_type == 'Lab':
+            
+#             while remaining_credits >= 2:
+#                 all_sessions.append({'course': course, 'duration': 2, 'priority': priority})
+#                 remaining_credits -= 2
+#                 priority += 1
+            
+#             if remaining_credits > 0: 
+#                 all_sessions.append({'course': course, 'duration': 1, 'priority': priority})
+#         else:
+#             for _ in range(remaining_credits):
+#                 all_sessions.append({'course': course, 'duration': 1, 'priority': priority})
+#                 priority += 1
+    
+#     random.shuffle(all_sessions)
+#     all_sessions.sort(key=lambda x: (x['priority'], -x['duration']))
+#     return all_sessions
+
+
+# def generate_routine_algorithm():
+#     RoutineEntry.objects.all().delete()
+    
+#     days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']
+#     time_slots = list(TimeSlot.objects.all().order_by('start_time'))
+#     courses = list(Course.objects.all())
+
+#     sorted_sessions = prepare_prioritized_sessions(courses)
+#     constraints = ScheduleConstraint(days)
+    
+#     scheduled_count = 0
+#     dropped_sessions = []
+
+#     for session in sorted_sessions:
+#         course = session['course']
+#         duration = session['duration']
+#         priority = session['priority']
+#         assigned = False
+        
+#         sorted_days = sorted(days, key=lambda d: constraints.day_loads[d])
+
+#         for day in sorted_days:
+#             if assigned: break
+
+#             current_slots = constraints.get_teacher_batch_slots(day, course)
+#             if current_slots + duration > 2:
+#                 continue 
+
+#             for i in range(len(time_slots) - duration + 1):
+#                 slots_to_check = []
+#                 conflict = False
+                
+#                 for j in range(duration):
+#                     slot = time_slots[i + j]
+                    
+#                     if constraints.is_conflict(day, slot, course):
+#                         conflict = True; break
+#                     slots_to_check.append(slot)
+                
+#                 if not conflict:
+                    
+#                     for slot in slots_to_check:
+#                         constraints.assign(day, slot, course)
+#                         RoutineEntry.objects.create(day=day, time_slot=slot, course=course)
+                    
+#                     assigned = True
+#                     scheduled_count += 1
+#                     break 
+        
+#         if not assigned:
+#             dropped_sessions.append(f"{course.course_name} ({course.course_type}) - Round {priority}")
+
+#     return {
+#         "status": "Completed",
+#         "scheduled": scheduled_count,
+#         "dropped": len(dropped_sessions),
+#         "dropped_details": dropped_sessions,
+#         "message": "Routine generated. Teacher max 2 periods per batch/day enforced."
+#     }
 
 
 
