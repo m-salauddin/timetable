@@ -122,8 +122,14 @@ class UserProfileSerializer(serializers.ModelSerializer):
         ]
         
     def get_name(self, obj):
-        full_name = " ".join(filter(None, [obj.first_name, obj.last_name])).strip()
-        return full_name or obj.username or "N/A"
+        if obj.first_name and obj.last_name:
+            return f"{obj.first_name} {obj.last_name}".strip()
+        elif obj.first_name:
+            return obj.first_name.strip()
+        elif obj.last_name:
+            return obj.last_name.strip()
+        else:
+            return "N/A"
     
     
     
