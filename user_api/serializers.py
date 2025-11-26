@@ -110,8 +110,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'username', 
             'email', 
             'name',  
-            'role', 
+            'role',
+            'department', 
             'department_name', 
+            'semester',
             'semester_name',
             'date_joined'
         ]
@@ -120,6 +122,6 @@ class UserProfileSerializer(serializers.ModelSerializer):
         if obj.first_name or obj.last_name:
             return f"{obj.first_name} {obj.last_name}".strip()
         return obj.username
-        
-        
     
+    
+   

@@ -6,7 +6,8 @@ from .views import (
     TeacherPanelView,
     StudentPanelView,
     UserProfileView,
-    UserListView
+    UserListView,
+     UserDetailView
 )
 from rest_framework_simplejwt.views import TokenRefreshView
 
@@ -22,5 +23,9 @@ urlpatterns = [
     
     path('profile/', UserProfileView.as_view(), name='user_profile'),
     path('users/', UserListView.as_view(), name='user_list'),
+    path('users/<int:pk>/', UserDetailView.as_view(), name='user_detail'),
 ]
+
+
+
 

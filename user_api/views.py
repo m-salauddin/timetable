@@ -12,6 +12,7 @@ from academic.models import Course
 from academic.serializers import CourseSerializer
 
 
+
 from django.http import HttpResponse
 
 def first_page(request):
@@ -84,10 +85,6 @@ class UserProfileView(APIView):
         return Response(serializer.data)
     
     
-    
-
-from rest_framework import generics
-from .serializers import UserProfileSerializer
 
 class UserListView(generics.ListAPIView):
     serializer_class = UserProfileSerializer
@@ -102,3 +99,9 @@ class UserListView(generics.ListAPIView):
             queryset = queryset.filter(role=role)
             
         return queryset
+    
+
+class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = User.objects.all()
+    serializer_class = UserProfileSerializer
+    permission_classes = [IsAuthenticated, IsAdminUser] 
