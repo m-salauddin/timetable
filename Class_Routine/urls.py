@@ -15,12 +15,26 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 
-
 from django.contrib import admin
 from django.urls import path, include
 from user_api.views import first_page
-
 from django.contrib.staticfiles.urls import staticfiles_urlpatterns
+
+# Swagger-এর জন্য নতুন ইমপোর্টগুলো
+from rest_framework import permissions
+from drf_yasg.views import get_schema_view
+from drf_yasg import openapi
+
+# Swagger কনফিগারেশন
+schema_view = get_schema_view(
+   openapi.Info(
+      title="Routine Generator API",
+      default_version='v1',
+      description="API documentation for Automated Class Scheduling System",
+   ),
+   public=True,
+   permission_classes=(permissions.AllowAny,),
+)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -30,10 +44,9 @@ urlpatterns = [
     path('api/', include('user_api.urls')), 
     
     path('api/academic/', include('academic.urls')), 
+    
+    # Swagger-এর URL নতুন যুক্ত করা হলো
+    path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
 ]
 
-urlpatterns += staticfiles_urlpatterns() 
-
-
-
-
+urlpatterns += staticfiles_urlpatterns()

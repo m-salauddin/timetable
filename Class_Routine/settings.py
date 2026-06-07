@@ -48,7 +48,8 @@ INSTALLED_APPS = [
     'django_filters',
     'corsheaders',
     'user_api',
-    'academic'
+    'academic',
+    'drf_yasg',
     
 
 
@@ -113,8 +114,19 @@ WSGI_APPLICATION = 'Class_Routine.wsgi.application'
 
 
 
+
+
+
+
+# নিচের লাইনটি নিশ্চিত করুন যে আপনার রেন্ডারের ডাটাবেস ইউআরএল এনভায়রনমেন্ট ভেরিয়েবল থেকে রিড করছে
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
 DATABASES = {
-    "default": dj_database_url.parse(os.environ.get("DATABASE_URL"))
+    'default': dj_database_url.config(
+        default=DATABASE_URL, 
+        conn_max_age=600,
+        ssl_require=True
+    )
 }
 
 
