@@ -1,219 +1,346 @@
-from .models import Course, TimeSlot, RoutineEntry, Room
+# academic/utils.py
 import random
+import math
 from django.db import transaction
-from collections import Counter
+from .models import (
+    Day, Course, TimeSlot, RoutineEntry, Room, 
+    SystemSetting, RoutineBackup, BatchTimeConstraint
+)
 
 class ScheduleConstraint:
-    def __init__(self, days):
-        self.teacher_occupied = set()    
-        self.room_occupied = set()        
-        self.batch_occupied = set()      
-        self.course_daily_tracker = set() 
+    def __init__(self, days, batch_constraints_dict, teacher_totals, batch_totals):
+        self.teacher_occupied = set()
+        self.room_occupied = set()
+        self.batch_occupied = set()
+        self.course_daily_tracker = set()
         self.teacher_batch_interaction = {}
-     
-        self.day_loads = {day: 0 for day in days} 
-        self.teacher_daily_count = {} 
-        self.batch_daily_count = {}   
 
-    def get_teacher_daily_load(self, day, teacher_id):
-        if not teacher_id: return 0
-        return self.teacher_daily_count.get((teacher_id, day), 0)
+        self.day_loads = {day.id: 0 for day in days}
+        self.teacher_daily_count = {}
+        self.batch_daily_count = {}
 
-    def get_batch_daily_load(self, day, dept_id, sem_id):
-        return self.batch_daily_count.get((dept_id, sem_id, day), 0)
-
-    def is_conflict(self, day, slot, course, room):
-        # Teacher conflict
-        if course.teacher and (day, slot.id, course.teacher.id) in self.teacher_occupied:
-            return True
+        self.batch_constraints = batch_constraints_dict
         
-  
-        if room and (day, slot.id, room.id) in self.room_occupied:
-            return True
-        
-        # Batch conflict
-        if (day, slot.id, course.department.id, course.semester.id) in self.batch_occupied:
-            return True
+        # ==================================================
+        # EVEN DISTRIBUTION LOGIC (Daily Load Limits)
+        # ==================================================
+        total_days = max(1, len(days))
+        # Teacher der limit: Average + 1 buffer
+        self.teacher_limits = {
+            tid: math.ceil(total / total_days) + 1 
+            for tid, total in teacher_totals.items()
+        }
+        # Batch der limit: Average + 2 buffer (because labs take 2 slots)
+        self.batch_limits = {
+            bid: math.ceil(total / total_days) + 2 
+            for bid, total in batch_totals.items()
+        }
 
-        # Course daily limit
-        if (course.id, day) in self.course_daily_tracker:
-            return True
-
-        # Teacher batch continuity
+    def can_schedule_daily(self, day_id, course, duration):
+        """
+        Check kore je aajker dine ei teacher ba batch er class limit cross korche kina.
+        """
+        # Teacher limit check
         if course.teacher:
-            tb_key = (day, course.teacher.id, course.department.id, course.semester.id)
-            if tb_key in self.teacher_batch_interaction:
-                existing_course_id = self.teacher_batch_interaction[tb_key]
-                if existing_course_id != course.id:
-                    return True 
+            t_limit = self.teacher_limits.get(course.teacher.id, 4)
+            current_t_load = self.teacher_daily_count.get((course.teacher.id, day_id), 0)
+            if current_t_load + duration > t_limit:
+                return False
+                
+        # Batch limit check
+        batch_key = (course.department.id, course.semester.id)
+        b_limit = self.batch_limits.get(batch_key, 6)
+        current_b_load = self.batch_daily_count.get((batch_key[0], batch_key[1], day_id), 0)
+        if current_b_load + duration > b_limit:
+            return False
+            
+        return True
+
+    def is_conflict(self, day, slot, course, room, group_name=None):
+        day_id = day.id
+        
+        # 1. Batch Time Constraints (Lunch Break & Admin Rules & Day Offs)
+        constraint_type = self.batch_constraints.get((course.department.id, course.semester.id, day_id, slot.id))
+        if constraint_type == 'CLASS_OFF':
+            return True
+        if slot.is_lunch_break and constraint_type != 'FORCE_ALLOW_LUNCH_CLASS':
+            return True
+
+        # 2. Global Teacher Conflict
+        if course.teacher and (day_id, slot.id, course.teacher.id) in self.teacher_occupied:
+            return True
+
+        # 3. Room Conflict
+        if room and (day_id, slot.id, room.id) in self.room_occupied:
+            return True
+
+        # 4. Target Batch Conflict (Ekoi batch e ekoi somoy double class hobe na)
+        if (day_id, slot.id, course.department.id, course.semester.id) in self.batch_occupied:
+            return True
+
+        # 5. Course Daily Tracking (Ekoi subject er theory ekoi dine duibar hobe na)
+        is_lab = course.course_type and 'lab' in course.course_type.name.lower()
+        if not is_lab and (course.id, group_name, day_id) in self.course_daily_tracker:
+            return True
+
+        # 6. Teacher-Batch Interaction Limit
+        if course.teacher:
+            tb_key = (day_id, course.teacher.id, course.department.id, course.semester.id)
+            if tb_key in self.teacher_batch_interaction and self.teacher_batch_interaction[tb_key] != course.id:
+                return True
+
         return False
 
-
-    def assign(self, day, slot, course, room):
+    def assign(self, day, slot, course, room, group_name=None):
+        day_id = day.id
         if course.teacher:
-            self.teacher_occupied.add((day, slot.id, course.teacher.id))
-            tb_key = (day, course.teacher.id, course.department.id, course.semester.id)
-            self.teacher_batch_interaction[tb_key] = course.id
-            t_key = (course.teacher.id, day)
-            self.teacher_daily_count[t_key] = self.teacher_daily_count.get(t_key, 0) + 1
-
-        if room:
-            self.room_occupied.add((day, slot.id, room.id))
-            
-        self.batch_occupied.add((day, slot.id, course.department.id, course.semester.id))
-        self.course_daily_tracker.add((course.id, day))
+            self.teacher_occupied.add((day_id, slot.id, course.teacher.id))
+            self.teacher_batch_interaction[(day_id, course.teacher.id, course.department.id, course.semester.id)] = course.id
+            self.teacher_daily_count[(course.teacher.id, day_id)] = self.teacher_daily_count.get((course.teacher.id, day_id), 0) + 1
         
-        self.day_loads[day] += 1
-        b_key = (course.department.id, course.semester.id, day)
-        self.batch_daily_count[b_key] = self.batch_daily_count.get(b_key, 0) + 1
+        if room:
+            self.room_occupied.add((day_id, slot.id, room.id))
+        
+        self.batch_occupied.add((day_id, slot.id, course.department.id, course.semester.id))
+        self.course_daily_tracker.add((course.id, group_name, day_id))
+        self.day_loads[day_id] += 1
+        self.batch_daily_count[(course.department.id, course.semester.id, day_id)] = self.batch_daily_count.get((course.department.id, course.semester.id, day_id), 0) + 1
 
 
 def prepare_prioritized_sessions(courses):
     all_sessions = []
-    
     for course in courses:
         total_credits = course.credits if course.credits > 0 else 1
-        credits_filled = 0 
+        credits_filled = 0
         remaining_credits = course.credits
-        
-        if course.course_type == 'Lab':
+        is_lab_course = course.course_type and 'lab' in course.course_type.name.lower()
+
+        fixed_bonus = 1000 if (course.fixed_day or course.fixed_time_slot or course.fixed_room) else 0
+
+        if is_lab_course:
             while remaining_credits >= 2:
                 credits_filled += 2
-                priority_score = credits_filled / total_credits 
-                all_sessions.append({
-                    'course': course, 
-                    'duration': 2, 
-                    'priority_score': priority_score,
-                    'is_lab': True
-                })
+                all_sessions.append({'course': course, 'duration': 2, 'priority_score': (credits_filled / total_credits) + fixed_bonus, 'is_lab': True})
                 remaining_credits -= 2
-           
             if remaining_credits > 0:
                 credits_filled += 1
-                all_sessions.append({
-                    'course': course, 
-                    'duration': 1, 
-                    'priority_score': credits_filled / total_credits,
-                    'is_lab': True
-                })
+                all_sessions.append({'course': course, 'duration': 1, 'priority_score': (credits_filled / total_credits) + fixed_bonus, 'is_lab': True})
         else:
             for _ in range(remaining_credits):
                 credits_filled += 1
-                all_sessions.append({
-                    'course': course, 
-                    'duration': 1, 
-                    'priority_score': credits_filled / total_credits,
-                    'is_lab': False
-                })
-    
-    random.shuffle(all_sessions) 
-    all_sessions.sort(key=lambda x: (x['priority_score'], -x['duration']))
+                all_sessions.append({'course': course, 'duration': 1, 'priority_score': (credits_filled / total_credits) + fixed_bonus, 'is_lab': False})
+
+    random.shuffle(all_sessions)
+    all_sessions.sort(key=lambda x: (x['priority_score'], -x['duration']), reverse=True)
     return all_sessions
 
 
-def generate_routine_algorithm(department_id):
+def get_valid_rooms_for_course(course, all_active_rooms, is_lab):
+    if course.fixed_room and course.fixed_room.is_active:
+        return [course.fixed_room]
+
+    base_matching_rooms = [
+        r for r in all_active_rooms
+        if r.room_type_id == course.course_type_id 
+        and (not course.course_sub_type_id or r.room_sub_type_id == course.course_sub_type_id)
+    ]
+
+    dept_to_search = course.preferred_room_department or course.offering_department or course.department
+    dept_rooms = [r for r in base_matching_rooms if r.department == dept_to_search]
+    valid_rooms = dept_rooms if dept_rooms else base_matching_rooms
+
+    rooms_fitting_capacity = [r for r in valid_rooms if r.capacity >= course.student_count]
+
+    if rooms_fitting_capacity:
+        return sorted(rooms_fitting_capacity, key=lambda x: x.capacity)
+    
+    if is_lab and valid_rooms:
+        valid_rooms.sort(key=lambda x: x.capacity, reverse=True)
+        return [valid_rooms[0]]
+    
+    return []
+
+def generate_routine_algorithm(department_id, semester_id=None, ignore_warnings=False):
+    setting = SystemSetting.objects.first()
+    if setting and setting.is_routine_locked:
+        return {"status": "Locked", "message": "System is locked. Cannot generate routine."}
+
+    with transaction.atomic():
+        # Optimization: Fetch everything with select_related to prevent N+1 DB Queries
+        base_courses = Course.objects.select_related(
+            'teacher', 'department', 'semester', 'course_type', 'course_sub_type', 
+            'fixed_day', 'fixed_time_slot', 'fixed_room', 'preferred_room_department', 'offering_department'
+        ).filter(department_id=department_id, is_active=True)
+
+        if semester_id:
+            courses_to_schedule = list(base_courses.filter(semester_id=semester_id))
+            old_routines = RoutineEntry.objects.filter(course__department_id=department_id, course__semester_id=semester_id)
+        else:
+            courses_to_schedule = list(base_courses)
+            old_routines = RoutineEntry.objects.filter(course__department_id=department_id)
+
+        if old_routines.exists():
+            backup_list = [{'day_id': e.day_id, 'time_slot_id': e.time_slot_id, 'course_id': e.course_id, 'room_id': e.room_id, 'group_name': e.group_name} for e in old_routines]
+            RoutineBackup.objects.create(department_id=department_id, backup_data=backup_list)
+
+        old_routines.delete()
+
+        days = list(Day.objects.all().order_by('order'))
+        time_slots = list(TimeSlot.objects.all().order_by('start_time'))
+        all_active_rooms = list(Room.objects.filter(is_active=True))
+
+        constraints_qs = BatchTimeConstraint.objects.filter(is_active=True)
+        batch_constraints_dict = {
+            (c.department_id, c.semester_id, c.day_id, c.time_slot_id): c.constraint_type
+            for c in constraints_qs
+        }
+
+        # Calculate Totals for Even Distribution
+        sorted_sessions = prepare_prioritized_sessions(courses_to_schedule)
+        teacher_totals = {}
+        batch_totals = {}
+        for session in sorted_sessions:
+            c = session['course']
+            dur = session['duration']
+            if c.teacher:
+                teacher_totals[c.teacher.id] = teacher_totals.get(c.teacher.id, 0) + dur
+            batch_key = (c.department.id, c.semester.id)
+            batch_totals[batch_key] = batch_totals.get(batch_key, 0) + dur
+
+        constraints = ScheduleConstraint(days, batch_constraints_dict, teacher_totals, batch_totals)
+
+        # Existing Routine load (excluding what we just deleted)
+        existing_routines = RoutineEntry.objects.select_related('day', 'time_slot', 'course', 'course__teacher', 'course__department', 'course__semester', 'room').filter(is_active=True)
+        for r in existing_routines:
+            constraints.assign(r.day, r.time_slot, r.course, r.room, r.group_name)
+
+        scheduled_count = 0
+        dropped_sessions = []
+        routines_to_create = [] # Bulk Create List (Enterprise Optimization)
+
+        for session in sorted_sessions:
+            course = session['course']
+            duration = session['duration']
+            is_lab = session.get('is_lab', False)
+            allowed_days = [course.fixed_day] if course.fixed_day else days
+
+            valid_rooms = get_valid_rooms_for_course(course, all_active_rooms, is_lab)
+            groups_to_schedule = [None]
+
+            if valid_rooms and is_lab and valid_rooms[0].capacity < course.student_count:
+                num_groups = math.ceil(course.student_count / valid_rooms[0].capacity)
+                groups_to_schedule = [f"Group {chr(65+i)}" for i in range(num_groups)]
+
+            if not valid_rooms:
+                dropped_sessions.append(f"Dropped: {course.course_name} (No suitable room found based on hierarchy)")
+                continue
+
+            for group_name in groups_to_schedule:
+                group_assigned = False
+                sorted_days = allowed_days
+                if not course.fixed_day:
+                    sorted_days = sorted(allowed_days, key=lambda d: constraints.day_loads[d.id])
+
+                for day in sorted_days:
+                    if group_assigned: break
+                    
+                    # Pre-check: Does this day exceed the even distribution limit?
+                    if not constraints.can_schedule_daily(day.id, course, duration):
+                        continue # Skip to the next day
+
+                    for i in range(len(time_slots) - duration + 1):
+                        if group_assigned: break
+                        start_slot = time_slots[i]
+                        if course.fixed_time_slot and start_slot.id != course.fixed_time_slot.id: continue
+
+                        window_slots = time_slots[i : i + duration]
+                        selected_room = None
+                        
+                        for room in valid_rooms:
+                            if not any(constraints.is_conflict(day, w_slot, course, room, group_name) for w_slot in window_slots):
+                                selected_room = room
+                                break
+
+                        if selected_room:
+                            for slot in window_slots:
+                                constraints.assign(day, slot, course, selected_room, group_name)
+                                # Append to list instead of hitting DB
+                                routines_to_create.append(RoutineEntry(
+                                    day=day, time_slot=slot, course=course, 
+                                    room=selected_room, group_name=group_name
+                                ))
+                            group_assigned = True
+                            scheduled_count += 1
+
+                # FALLBACK: If Strict Daily Limit blocks it, try again ignoring the limit (Ensures completion)
+                if not group_assigned and not course.fixed_day:
+                    for day in sorted_days:
+                        if group_assigned: break
+                        for i in range(len(time_slots) - duration + 1):
+                            if group_assigned: break
+                            start_slot = time_slots[i]
+                            window_slots = time_slots[i : i + duration]
+                            selected_room = None
+                            for room in valid_rooms:
+                                if not any(constraints.is_conflict(day, w_slot, course, room, group_name) for w_slot in window_slots):
+                                    selected_room = room
+                                    break
+                            if selected_room:
+                                for slot in window_slots:
+                                    constraints.assign(day, slot, course, selected_room, group_name)
+                                    routines_to_create.append(RoutineEntry(
+                                        day=day, time_slot=slot, course=course, room=selected_room, group_name=group_name
+                                    ))
+                                group_assigned = True
+                                scheduled_count += 1
+
+                if not group_assigned:
+                    grp_str = f" ({group_name})" if group_name else ""
+                    percent = int((session['priority_score'] % 1000) * 100)
+                    dropped_sessions.append(f"Dropped: {course.course_name}{grp_str} ({percent}% credit scheduled. Global conflict)")
+
+        # Fast Database Insert
+        if routines_to_create:
+            RoutineEntry.objects.bulk_create(routines_to_create)
+
+        if len(dropped_sessions) > 0 and not ignore_warnings:
+            transaction.set_rollback(True)
+            return {
+                "status": "Warning",
+                "total_classes_required": len(sorted_sessions),
+                "successful_classes": scheduled_count,
+                "dropped_classes": len(dropped_sessions),
+                "shortage_details": dropped_sessions,
+                "message": "সিস্টেমে কিছু ক্লাস বসানো সম্ভব হয়নি। আপনি চাইলে এই এরর ইগনোর করে আংশিক রুটিন সেভ করতে পারেন।"
+            }
+
+        summary_message = "রুটিন ১০০% সফলভাবে তৈরি হয়েছে!" if len(dropped_sessions) == 0 else "আংশিক রুটিন তৈরি করা হয়েছে।"
+        
+        return {
+            "status": "Success",
+            "total_classes_required": len(sorted_sessions),
+            "successful_classes": scheduled_count,
+            "dropped_classes": len(dropped_sessions),
+            "shortage_details": dropped_sessions,
+            "message": summary_message
+        }
+
+def rollback_routine_algorithm(department_id):
+    latest_backup = RoutineBackup.objects.filter(department_id=department_id).order_by('-created_at').first()
+    if not latest_backup: return {"status": "Error", "message": "No backup found."}
+    
+    setting = SystemSetting.objects.first()
+    if setting and setting.is_routine_locked: return {"status": "Locked", "message": "System is locked."}
 
     RoutineEntry.objects.filter(course__department_id=department_id).delete()
     
-    days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']
-    time_slots = list(TimeSlot.objects.all().order_by('start_time'))
+    # Optimized Rollback using bulk_create
+    routines = [
+        RoutineEntry(
+            day_id=item['day_id'], time_slot_id=item['time_slot_id'], 
+            course_id=item['course_id'], room_id=item['room_id'], group_name=item.get('group_name')
+        ) for item in latest_backup.backup_data
+    ]
+    RoutineEntry.objects.bulk_create(routines)
     
-    
-    courses = list(Course.objects.filter(department_id=department_id))
-    all_rooms = list(Room.objects.all())
-
-    constraints = ScheduleConstraint(days)
-    
-   
-    existing_routines = RoutineEntry.objects.exclude(course__department_id=department_id)
-    for r in existing_routines:
-        constraints.assign(r.day, r.time_slot, r.course, r.room)
-
-    sorted_sessions = prepare_prioritized_sessions(courses)
-    scheduled_count = 0
-    dropped_sessions = []
-
-    for session in sorted_sessions:
-        course = session['course']
-        duration = session['duration']
-        assigned = False
-        
-        # অ্যাডমিন ওভাররাইড চেক
-        allowed_days = [course.fixed_day] if course.fixed_day else days
-        
-        # রুম ফিল্টারিং লজিক
-        if course.fixed_room:
-            valid_rooms = [course.fixed_room]
-        else:
-            valid_rooms = []
-            for r in all_rooms:
-                if r.capacity < course.student_count: continue
-                if r.room_type != course.course_type: continue
-                if course.sub_category and r.sub_category != course.sub_category: continue
-                if r.department and r.department_id != course.department_id: continue
-                valid_rooms.append(r)
-            # ছোট রুমগুলো আগে ফিলআপ করার জন্য ক্যাপাসিটি অনুযায়ী সর্ট
-            valid_rooms.sort(key=lambda x: x.capacity)
-            
-        if not valid_rooms:
-            dropped_sessions.append(f"{course.course_name} - উপযুক্ত কোনো রুম পাওয়া যায়নি")
-            continue
-
-        # লোড ব্যালেন্সিং
-        if not course.fixed_day:
-            def get_day_score(d):
-                b_load = constraints.get_batch_daily_load(d, course.department.id, course.semester.id)
-                t_load = constraints.get_teacher_daily_load(d, course.teacher.id) if course.teacher else 0
-                g_load = constraints.day_loads[d]
-                return (b_load * 15) + (t_load * 10) + g_load
-            sorted_days = sorted(allowed_days, key=get_day_score)
-        else:
-            sorted_days = allowed_days
-
-        for day in sorted_days:
-            if assigned: break
-            
-            for i in range(len(time_slots) - duration + 1):
-                if assigned: break
-                
-                start_slot = time_slots[i]
-                
-                # অ্যাডমিন টাইম স্লট ওভাররাইড চেক
-                if course.fixed_time_slot and start_slot.id != course.fixed_time_slot.id:
-                    continue
-
-                window_slots = time_slots[i : i + duration]
-                selected_room = None
-
-                # চেক করা হচ্ছে কোন রুমটি কনফ্লিক্ট ছাড়া ফ্রি আছে
-                for room in valid_rooms:
-                    room_conflict = False
-                    for slot in window_slots:
-                        if constraints.is_conflict(day, slot, course, room):
-                            room_conflict = True
-                            break
-                    
-                    if not room_conflict:
-                        selected_room = room
-                        break 
-                
-                if selected_room:
-                    for slot in window_slots:
-                        constraints.assign(day, slot, course, selected_room)
-                        RoutineEntry.objects.create(day=day, time_slot=slot, course=course, room=selected_room)
-                    
-                    assigned = True
-                    scheduled_count += 1
-
-        if not assigned:
-            percent = int(session['priority_score'] * 100)
-            dropped_sessions.append(f"{course.course_name} ({percent}% Completed) - শিডিউল কনফ্লিক্ট বা টাইম স্লট নেই")
-
-    return {
-        "status": "Completed",
-        "total_sessions": len(sorted_sessions),
-        "scheduled": scheduled_count,
-        "dropped": len(dropped_sessions),
-        "dropped_details": dropped_sessions,
-        "message": "Routine generated successfully for the selected department."
-    }
+    return {"status": "Success", "message": "Routine rolled back successfully."}

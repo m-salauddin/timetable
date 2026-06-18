@@ -1,7 +1,24 @@
 from rest_framework import serializers
 
-# নতুন Room মডেলটি ইম্পোর্ট করা হলো
-from .models import Department, Semester, Course, TimeSlot, RoutineEntry, Room
+# Importing all models including the new dynamic ones
+from .models import Day, RoomType, RoomSubType, Department, Semester, Course, TimeSlot, RoutineEntry, Room
+
+# Added serializers for the new dynamic models so they can be accessed via API if needed
+class DaySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Day
+        fields = ['id', 'name', 'order']
+
+class RoomTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RoomType
+        fields = ['id', 'name']
+
+class RoomSubTypeSerializer(serializers.ModelSerializer):
+    main_type_name = serializers.CharField(source='main_type.name', read_only=True)
+    class Meta:
+        model = RoomSubType
+        fields = ['id', 'name', 'main_type', 'main_type_name']
 
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
@@ -13,32 +30,48 @@ class SemesterSerializer(serializers.ModelSerializer):
         model = Semester
         fields = ['id', 'name', 'order']
 
-# ১. নতুন RoomSerializer তৈরি করা হলো
+# 1. Updated RoomSerializer
 class RoomSerializer(serializers.ModelSerializer):
     department_name = serializers.CharField(source='department.name', read_only=True)
     
+    # Fetching string names for frontend display
+    room_type_name = serializers.CharField(source='room_type.name', read_only=True)
+    room_sub_type_name = serializers.CharField(source='room_sub_type.name', read_only=True)
+    
     class Meta:
         model = Room
-        fields = ['id', 'room_number', 'capacity', 'room_type', 'sub_category', 'department', 'department_name']
+        fields = [
+            'id', 'room_number', 'capacity', 
+            'room_type', 'room_type_name', 
+            'room_sub_type', 'room_sub_type_name', 
+            'department', 'department_name'
+        ]
 
+# 2. Updated CourseSerializer
 class CourseSerializer(serializers.ModelSerializer):
     teacher_name = serializers.CharField(source='teacher.username', read_only=True)
     department_name = serializers.CharField(source='department.name', read_only=True)
     semester_name = serializers.CharField(source='semester.name', read_only=True)
     
-    # ফ্রন্টএন্ডের সুবিধার্থে অ্যাডমিন ফিক্সড রুমের নাম দেখার জন্য (ঐচ্ছিক)
+    # Fetching string names for frontend convenience
     fixed_room_number = serializers.CharField(source='fixed_room.room_number', read_only=True)
+    course_type_name = serializers.CharField(source='course_type.name', read_only=True)
+    course_sub_type_name = serializers.CharField(source='course_sub_type.name', read_only=True)
+    fixed_day_name = serializers.CharField(source='fixed_day.name', read_only=True)
 
     class Meta:
         model = Course
-        # room_number বাদ দেওয়া হয়েছে এবং নতুন ফিল্ডগুলো যোগ করা হয়েছে
         fields = [
             'id', 'course_code', 'course_name', 'student_count',
-            'credits', 'course_type', 'sub_category',
+            'credits', 
+            'course_type', 'course_type_name', 
+            'course_sub_type', 'course_sub_type_name',
             'teacher', 'teacher_name',
             'department', 'department_name',
             'semester', 'semester_name',
-            'fixed_room', 'fixed_room_number', 'fixed_day', 'fixed_time_slot'
+            'fixed_room', 'fixed_room_number', 
+            'fixed_day', 'fixed_day_name', 
+            'fixed_time_slot'
         ]
 
 class TimeSlotSerializer(serializers.ModelSerializer):
@@ -46,7 +79,9 @@ class TimeSlotSerializer(serializers.ModelSerializer):
         model = TimeSlot
         fields = ['id', 'start_time', 'end_time']
 
+
 class RoutineEntrySerializer(serializers.ModelSerializer):
+    day_name = serializers.CharField(source='day.name', read_only=True)
     course_name = serializers.CharField(source='course.course_name', read_only=True)
     course_code = serializers.CharField(source='course.course_code', read_only=True)
 
@@ -54,9 +89,7 @@ class RoutineEntrySerializer(serializers.ModelSerializer):
     department_name = serializers.SerializerMethodField()
     semester_name = serializers.SerializerMethodField()
     
-    # ২. room_number এখন course.room_number এর বদলে room.room_number থেকে আসবে
     room_number = serializers.CharField(source='room.room_number', read_only=True)
-    
     start_time = serializers.TimeField(source='time_slot.start_time', read_only=True)
     end_time = serializers.TimeField(source='time_slot.end_time', read_only=True)
     credits = serializers.IntegerField(source='course.credits', read_only=True)
@@ -65,7 +98,7 @@ class RoutineEntrySerializer(serializers.ModelSerializer):
         model = RoutineEntry
         fields = [
             'id', 
-            'day', 
+            'day', 'day_name',
             'start_time', 
             'end_time',
             'course_name', 
@@ -74,7 +107,10 @@ class RoutineEntrySerializer(serializers.ModelSerializer):
             'teacher_name', 
             'department_name', 
             'semester_name', 
-            'room_number' # আপডেটেড
+            'room_number',
+            'group_name',
+            'is_cancelled',   # New field
+            'cancel_message'  # New field
         ]
 
     def get_teacher_name(self, obj):

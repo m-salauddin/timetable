@@ -1,10 +1,8 @@
 # user_api/models.py
-
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
 class User(AbstractUser):
-    
     ROLE_CHOICES = (
         ('ADMIN', 'Admin'),
         ('TEACHER', 'Teacher'),
@@ -20,6 +18,13 @@ class User(AbstractUser):
         blank=True
     )
     
+    # Batch টি এখানে যোগ করা হলো
+    batch = models.ForeignKey(
+        'academic.Batch', 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True
+    )
     
     semester = models.ForeignKey(
         'academic.Semester', 
@@ -27,5 +32,3 @@ class User(AbstractUser):
         null=True, 
         blank=True
     )
-    
- 

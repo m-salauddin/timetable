@@ -1,100 +1,232 @@
+# academic/models.py
 from django.db import models
 from django.conf import settings
 
-# DAY_CHOICES কে উপরে নিয়ে আসলাম যাতে একাধিক জায়গায় ব্যবহার করা যায়
-DAY_CHOICES = (
-    ('Sunday', 'Sunday'),
-    ('Monday', 'Monday'),
-    ('Tuesday', 'Tuesday'),
-    ('Wednesday', 'Wednesday'),
-    ('Thursday', 'Thursday'),
-)
+# ==============================================================================
+# 0. MASTER BASE MODEL (For Audit Trails & Soft Delete)
+# ==============================================================================
+class TimeStampedModel(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    is_active = models.BooleanField(
+        default=True, 
+        help_text="Soft Delete: Uncheck to archive/hide this record instead of permanently deleting."
+    )
 
-class Department(models.Model):
-    name = models.CharField(max_length=100, unique=True)
-    def __str__(self): return self.name
+    class Meta:
+        abstract = True
 
-class Semester(models.Model):
-    name = models.CharField(max_length=100, unique=True)
-    order = models.PositiveIntegerField(unique=True)
-    def __str__(self): return self.name
+
+# ==============================================================================
+# 1. CORE LOOKUP MODELS
+# ==============================================================================
+class Day(models.Model):
+    name = models.CharField(max_length=15, unique=True, help_text="e.g., Sunday, Monday")
+    order = models.PositiveIntegerField(default=0)
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        ordering = ['order']
 
 class TimeSlot(models.Model):
     start_time = models.TimeField()
     end_time = models.TimeField()
-    
+    is_lunch_break = models.BooleanField(default=False, help_text="Global lunch break flag.")
+
     def __str__(self):
         return f"{self.start_time.strftime('%I:%M %p')} - {self.end_time.strftime('%I:%M %p')}"
 
-# ১. নতুন Room মডেল তৈরি
-class Room(models.Model):
-    ROOM_TYPES = (
-        ('Theory', 'Theory'),
-        ('Lab', 'Lab'),
+
+class RoomType(models.Model):
+    name = models.CharField(max_length=100, unique=True, help_text="e.g., Theory, Lab")
+    def __str__(self): return self.name
+
+class RoomSubType(models.Model):
+    main_type = models.ForeignKey(RoomType, on_delete=models.CASCADE, related_name='sub_types')
+    name = models.CharField(max_length=100)
+    def __str__(self): return f"{self.main_type.name} - {self.name}"
+
+
+# ==============================================================================
+# 2. UNIVERSITY STRUCTURE MODELS (Inheriting TimeStampedModel)
+# ==============================================================================
+class Department(TimeStampedModel):
+    name = models.CharField(max_length=100, unique=True)
+    def __str__(self): return self.name
+
+class Semester(TimeStampedModel):
+    name = models.CharField(max_length=100, unique=True)
+    order = models.PositiveIntegerField(unique=True)
+    def __str__(self): return self.name
+
+# --- NEW: BATCH MODEL FOR ALUMNI & LIFECYCLE MANAGEMENT ---
+class Batch(TimeStampedModel):
+    STATUS_CHOICES = (
+        ('ACTIVE', 'Active (Currently Studying)'),
+        ('GRADUATED', 'Graduated / Alumni (Archived)'),
     )
+    name = models.CharField(max_length=50, help_text="e.g., 25th Batch, Spring 2026")
+    department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name='batches')
+    current_semester = models.ForeignKey(Semester, on_delete=models.SET_NULL, null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACTIVE')
+
+    class Meta:
+        verbose_name_plural = "Batches"
+
+    def __str__(self):
+        sem_name = self.current_semester.name if self.current_semester else "No Semester"
+        return f"{self.name} - {self.department.name} ({sem_name})"
+
+    # =========================================================
+    # অটোমেটিক আপডেটের জন্য ম্যাজিক save() মেথড
+    # =========================================================
+    def save(self, *args, **kwargs):
+        is_new = self.pk is None
+        old_semester = None
+        old_status = None
+        
+        # ১. ডেটাবেজে আগের অবস্থায় কী ডেটা ছিলো তা বের করে আনা
+        if not is_new:
+            old_batch = Batch.objects.filter(pk=self.pk).first()
+            if old_batch:
+                old_semester = old_batch.current_semester
+                old_status = getattr(old_batch, 'status', None)
+
+        # ২. আগে ব্যাচের মূল ডেটা সেভ করে নেওয়া
+        super().save(*args, **kwargs)
+
+        # ৩. আসল ম্যাজিক: অটোমেটিক ইউজার আপডেট
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+
+        if not is_new:
+            # AUTOMATION 1: সেমিস্টার আপডেট লজিক
+            if old_semester != self.current_semester:
+                User.objects.filter(batch=self, role='STUDENT').update(semester=self.current_semester)
+
+            # AUTOMATION 2: গ্র্যাজুয়েশন লজিক (ব্যাচ পাস করে গেলে)
+            if old_status == 'ACTIVE' and self.status == 'GRADUATED':
+                # সব স্টুডেন্টের সেমিস্টার মুছে দেওয়া এবং তাদের inactive করে দেওয়া
+                User.objects.filter(batch=self, role='STUDENT').update(semester=None, is_active=False)
+
+                
+class Room(TimeStampedModel):
     room_number = models.CharField(max_length=50, unique=True)
-    capacity = models.PositiveIntegerField(help_text="এই রুমের ছাত্র ধারণক্ষমতা")
-    room_type = models.CharField(max_length=10, choices=ROOM_TYPES, default='Theory')
-    sub_category = models.CharField(max_length=100, null=True, blank=True, help_text="যেমন: Computer Lab, Electronics Lab (ঐচ্ছিক)")
-    
-    # রুমটি যদি নির্দিষ্ট কোনো ডিপার্টমেন্টের হয় (ঐচ্ছিক)
+    capacity = models.PositiveIntegerField(help_text="Student capacity of this room")
+    room_type = models.ForeignKey(RoomType, on_delete=models.CASCADE)
+    room_sub_type = models.ForeignKey(RoomSubType, on_delete=models.SET_NULL, null=True, blank=True)
     department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True)
 
     def __str__(self):
-        return f"{self.room_number} ({self.room_type} - Cap: {self.capacity})"
+        return f"{self.room_number} ({self.room_type.name} - Cap: {self.capacity})"
 
-# ২. Course মডেল আপডেট
-class Course(models.Model):
-    COURSE_TYPES = (
-        ('Theory', 'Theory'),
-        ('Lab', 'Lab'),
-    )
 
-    course_code = models.CharField(max_length=20, unique=True) 
+# ==============================================================================
+# 3. ACADEMIC & COURSE MODELS (Cross-Department Architecture)
+# ==============================================================================
+class Course(TimeStampedModel):
     course_name = models.CharField(max_length=255)
-    department = models.ForeignKey(Department, on_delete=models.CASCADE)
+    course_code = models.CharField(max_length=50, unique=True)
+    
+    # Target: The students who are taking this course (e.g., CSE students)
+    department = models.ForeignKey(Department, related_name='targeted_courses', on_delete=models.CASCADE)
     semester = models.ForeignKey(Semester, on_delete=models.CASCADE)
+    
+    # --- NEW CROSS-DEPARTMENT FIELDS ---
+    # Offering: The department that teaches it (e.g., Math Dept)
+    offering_department = models.ForeignKey(
+        Department, related_name='offered_courses', on_delete=models.SET_NULL, null=True, blank=True,
+        help_text="Who teaches this? Leave blank if same as Target Department."
+    )
+    # Preferred Room: If Math Dept teaches CSE, but wants to use CSE rooms
+    preferred_room_department = models.ForeignKey(
+        Department, related_name='preferred_room_courses', on_delete=models.SET_NULL, null=True, blank=True,
+        help_text="Force algorithm to look for rooms in this specific department first."
+    )
+    
     teacher = models.ForeignKey(
-        settings.AUTH_USER_MODEL, 
-        on_delete=models.SET_NULL, 
-        null=True, blank=True,
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, 
         limit_choices_to={'role': 'TEACHER'}
     )
+    credits = models.IntegerField()
+    student_count = models.IntegerField(default=0)
     
-    # ডিলিট করা হয়েছে: room_number = models.CharField(...)
-    
-    # নতুন যোগ করা হয়েছে: লজিক অনুযায়ী
-    student_count = models.PositiveIntegerField(default=0, help_text="এই কোর্সে মোট ছাত্র সংখ্যা")
-    credits = models.IntegerField(default=3, help_text="Number of classes per week")
-    course_type = models.CharField(max_length=10, choices=COURSE_TYPES, default='Theory')
-    sub_category = models.CharField(max_length=100, null=True, blank=True, help_text="ল্যাব হলে স্পেসিফিক ক্যাটাগরি (যেমন: Computer Lab)")
+    course_type = models.ForeignKey(RoomType, on_delete=models.CASCADE)
+    course_sub_type = models.ForeignKey(RoomSubType, on_delete=models.SET_NULL, null=True, blank=True)
 
-    # নতুন যোগ করা হয়েছে: অ্যাডমিন ওভাররাইড (অ্যাডমিন চাইলে নির্দিষ্ট করে দিতে পারে)
-    fixed_room = models.ForeignKey(Room, on_delete=models.SET_NULL, null=True, blank=True, help_text="অ্যাডমিন চাইলে এই কোর্সের জন্য নির্দিষ্ট রুম ফিক্সড করতে পারে")
-    fixed_day = models.CharField(max_length=15, choices=DAY_CHOICES, null=True, blank=True, help_text="অ্যাডমিন চাইলে নির্দিষ্ট দিন ফিক্সড করতে পারে")
-    fixed_time_slot = models.ForeignKey(TimeSlot, on_delete=models.SET_NULL, null=True, blank=True, help_text="অ্যাডমিন চাইলে নির্দিষ্ট টাইম স্লট ফিক্সড করতে পারে")
+    # Fixed Routine Constraints
+    fixed_day = models.ForeignKey(Day, on_delete=models.SET_NULL, null=True, blank=True)
+    fixed_time_slot = models.ForeignKey(TimeSlot, on_delete=models.SET_NULL, null=True, blank=True)
+    fixed_room = models.ForeignKey(Room, on_delete=models.SET_NULL, null=True, blank=True)
 
     def __str__(self):
-        return f"{self.course_code} - {self.course_name} ({self.course_type})"
+        return f"{self.course_code} - {self.course_name}"
 
-# ৩. RoutineEntry মডেল আপডেট
-class RoutineEntry(models.Model):
-    day = models.CharField(max_length=15, choices=DAY_CHOICES)
+    def get_offering_dept(self):
+        # Fallback to target department if offering department is not set
+        return self.offering_department if self.offering_department else self.department
+
+
+# ==============================================================================
+# 4. ROUTINE & CONSTRAINT MODELS
+# ==============================================================================
+class RoutineEntry(TimeStampedModel):
+    day = models.ForeignKey(Day, on_delete=models.CASCADE)
     time_slot = models.ForeignKey(TimeSlot, on_delete=models.CASCADE)
     course = models.ForeignKey(Course, on_delete=models.CASCADE)
-    
-    # নতুন যোগ করা হয়েছে: অ্যালগরিদম এখানে রুম অ্যাসাইন করবে
     room = models.ForeignKey(Room, on_delete=models.CASCADE, null=True, blank=True)
+    group_name = models.CharField(max_length=50, null=True, blank=True)
+
+    is_cancelled = models.BooleanField(default=False)
+    cancel_message = models.TextField(null=True, blank=True)
 
     class Meta:
-        # একই দিনে, একই সময়ে, একই রুমে একাধিক ক্লাস হতে পারবে না (কনফ্লিক্ট রোধ)
         unique_together = (('day', 'time_slot', 'room'), ('day', 'time_slot', 'course'))
 
     def __str__(self):
-        dept_name = self.course.department.name if self.course and self.course.department else 'No Dept'
-        sem_name = self.course.semester.name if self.course and self.course.semester else 'No Semester'
-        course_name = self.course.course_name if self.course else 'No Course'
-        # আপডেটেড রুমের নাম
-        room_name = self.room.room_number if self.room else 'Unassigned'
-        
-        return f"{self.day} | {self.time_slot} | {dept_name} ({sem_name}) | {course_name} | Room: {room_name}"
+        return f"{self.day.name} | {self.time_slot} | {self.course.course_code} | Room: {self.room}"
+
+
+class BatchTimeConstraint(TimeStampedModel):
+    CONSTRAINT_CHOICES = (
+        ('CLASS_OFF', 'Class Off / Blocked'),
+        ('FORCE_ALLOW_LUNCH_CLASS', 'Force Allow Class During Lunch'),
+    )
+    department = models.ForeignKey(Department, on_delete=models.CASCADE)
+    semester = models.ForeignKey(Semester, on_delete=models.CASCADE)
+    
+    # NEW: Link specifically to a Batch (Optional, for batch-specific blocks)
+    batch = models.ForeignKey(Batch, on_delete=models.CASCADE, null=True, blank=True, help_text="Optional: Apply only to a specific batch")
+    
+    day = models.ForeignKey(Day, on_delete=models.CASCADE)
+    time_slot = models.ForeignKey(TimeSlot, on_delete=models.CASCADE)
+    constraint_type = models.CharField(max_length=50, choices=CONSTRAINT_CHOICES, default='CLASS_OFF')
+
+    class Meta:
+        unique_together = ('department', 'semester', 'batch', 'day', 'time_slot')
+
+    def __str__(self):
+        return f"Rule: {self.department.name} | {self.day.name} | {self.get_constraint_type_display()}"
+
+
+class SystemSetting(models.Model):
+    is_routine_locked = models.BooleanField(default=False)
+    last_updated = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        if not self.pk and SystemSetting.objects.exists(): return
+        super(SystemSetting, self).save(*args, **kwargs)
+
+
+class RoutineBackup(models.Model):
+    department = models.ForeignKey(Department, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    backup_data = models.JSONField()
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Backup: {self.department.name} | {self.created_at}"
