@@ -12,18 +12,23 @@ from rest_framework.parsers import MultiPartParser, FormParser
 
 import tablib
 
-from .admin import CourseResource, RoomResource, DepartmentResource, BatchResource
+from .admin import CourseResource, RoomResource, DepartmentResource, BatchResource, RoutineEntryResource,SemesterResource,UserResource
 from user_api.admin import UserResource
 
 from .models import (
     Department, Semester, Course, TimeSlot, RoutineEntry, Room, 
-    RoomType, RoomSubType, Day
+    RoomType, RoomSubType, Day,  
+    RoutineEntry, BatchTimeConstraint, SystemBackup
 )
 from .utils import generate_routine_algorithm, rollback_routine_algorithm
 from .serializers import (
     DepartmentSerializer, SemesterSerializer, CourseSerializer, 
     TimeSlotSerializer, RoutineEntrySerializer, RoomSerializer
 )
+
+
+
+
 from user_api.permissions import IsAdminUser
 
 User = get_user_model()
@@ -338,7 +343,12 @@ RESOURCE_MAP = {
     'room': RoomResource,
     'department': DepartmentResource,
     'batch': BatchResource,
+    'routine': RoutineEntryResource,
 }
+
+
+
+
 
 class ExcelImportView(APIView):
     permission_classes = [IsAdminUser]
@@ -427,3 +437,180 @@ class ExcelExportView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+
+# academic/views.py (Add at the bottom)
+
+from django.http import HttpResponse
+from django.core import serializers
+import json
+import tablib
+
+from .models import SystemBackup
+
+# ==============================================================================
+# ENTERPRISE: MULTI-SHEET EXCEL SYNC (All Tables)
+# ==============================================================================
+# academic/views.py er vitor SystemExcelSyncView class ta update korun
+
+from django.db import transaction
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import IsAdminUser
+from django.http import HttpResponse
+import tablib
+
+from .admin import (
+    UserResource, DepartmentResource, SemesterResource, 
+    RoomResource, BatchResource, CourseResource, RoutineEntryResource
+)
+
+class SystemExcelSyncView(APIView):
+    permission_classes = [IsAdminUser]
+
+    # ==========================================
+    # 1. MULTI-SHEET EXPORT (Ager motoi)
+    # ==========================================
+    def get(self, request):
+        try:
+            databook = tablib.Databook()
+            export_sequence = [
+                ('Users', UserResource()), 
+                ('Departments', DepartmentResource()),
+                ('Semesters', SemesterResource()), 
+                ('Rooms', RoomResource()),
+                ('Batches', BatchResource()),
+                ('Courses', CourseResource()),
+                ('Routine', RoutineEntryResource())
+            ]
+
+            for sheet_name, resource in export_sequence:
+                dataset = resource.export()
+                dataset.title = sheet_name
+                databook.add_sheet(dataset)
+
+            response = HttpResponse(
+                databook.xlsx, 
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+            response['Content-Disposition'] = 'attachment; filename="Full_System_Backup.xlsx"'
+            return response
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # ==========================================
+    # 2. MULTI-SHEET IMPORT (Notun Add Holo)
+    # ==========================================
+    def post(self, request):
+        """ Upload single Excel file with multiple sheets to import all data """
+        file = request.FILES.get('file')
+        if not file:
+            return Response({"error": "Excel file upload kora proyojon"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # Databook e Excel file ta load kora
+            databook = tablib.Databook()
+            databook.xlsx = file.read()
+
+            # Strict Import Order (Dependency onujayi)
+            import_sequence = [
+                ('Users', UserResource()),
+                ('Departments', DepartmentResource()),
+                ('Semesters', SemesterResource()),
+                ('Rooms', RoomResource()),
+                ('Batches', BatchResource()),
+                ('Courses', CourseResource()),
+                ('Routine', RoutineEntryResource())
+            ]
+
+            # Atomic transaction jate modhupothe error khele sob ager moto hoye jay
+            with transaction.atomic():
+                for sheet_name, resource in import_sequence:
+                    try:
+                        # Excel theke sheet er nam onujayi data neya
+                        dataset = databook.get_sheet(sheet_name)
+                    except (ValueError, KeyError):
+                        # Jodi oi namer sheet na thake tobe skip korbe
+                        continue
+
+                    # Data import kora (raise_errors=True deya jate error halei rollback hoy)
+                    result = resource.import_data(dataset, dry_run=False, raise_errors=True)
+                    if result.has_errors():
+                        raise ValueError(f"{sheet_name} sheet er data te somossa ache.")
+
+            return Response({"status": "success", "message": "Sob gulo sheet er data safolbhabe import hoyeche!"})
+
+        except Exception as e:
+            return Response({"error": f"Import fail hoyeche, system rollback kora hoyeche. Reason: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+# ==============================================================================
+# ENTERPRISE: POINT-IN-TIME BACKUP & RESTORE (JSON Snapshots)
+# ==============================================================================
+class SystemSnapshotView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def post(self, request):
+        """ Create a full JSON snapshot of the Academic App """
+        action = request.data.get('action') # 'backup' or 'restore'
+        
+        if action == 'backup':
+            backup_name = request.data.get('name', 'Auto Backup')
+            try:
+                # Get all academic models to backup
+                models_to_backup = [Department, Semester, Batch, Room, Course, RoutineEntry, BatchTimeConstraint]
+                
+                # Serialize all models into a single JSON string
+                full_data = []
+                for model in models_to_backup:
+                    qs = model.objects.all()
+                    data = json.loads(serializers.serialize('json', qs))
+                    full_data.extend(data)
+
+                # Save to database
+                backup_obj = SystemBackup.objects.create(
+                    name=backup_name,
+                    backup_data=json.dumps(full_data),
+                    created_by=request.user
+                )
+                
+                return Response({
+                    "status": "success", 
+                    "message": f"Snapshot '{backup_name}' created successfully!",
+                    "backup_id": backup_obj.id
+                })
+            except Exception as e:
+                return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        elif action == 'restore':
+            backup_id = request.data.get('backup_id')
+            if not backup_id:
+                return Response({"error": "backup_id is required for restore"}, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                backup_obj = SystemBackup.objects.get(id=backup_id)
+                objects_to_restore = list(serializers.deserialize("json", backup_obj.backup_data))
+                
+                # ATOMIC RESTORE PIPELINE (Safe Rollback)
+                with transaction.atomic():
+                    # 1. Purge current data in reverse order (to avoid foreign key constraint errors)
+                    RoutineEntry.objects.all().delete()
+                    BatchTimeConstraint.objects.all().delete()
+                    Course.objects.all().delete()
+                    Batch.objects.all().delete()
+                    Room.objects.all().delete()
+                    Semester.objects.all().delete()
+                    Department.objects.all().delete()
+
+                    # 2. Re-insert backup data
+                    for obj in objects_to_restore:
+                        obj.save()
+
+                return Response({"status": "success", "message": "System successfully restored to previous state!"})
+            
+            except SystemBackup.DoesNotExist:
+                return Response({"error": "Backup not found!"}, status=status.HTTP_404_NOT_FOUND)
+            except Exception as e:
+                # If anything fails, transaction.atomic() automatically cancels the deletion and rolls back!
+                return Response({"error": f"Restore failed, system rolled back safely. Reason: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        return Response({"error": "Invalid action. Use 'backup' or 'restore'"}, status=status.HTTP_400_BAD_REQUEST)

@@ -2,6 +2,7 @@
 from django.db import models
 from django.conf import settings
 
+
 # ==============================================================================
 # 0. MASTER BASE MODEL (For Audit Trails & Soft Delete)
 # ==============================================================================
@@ -230,3 +231,20 @@ class RoutineBackup(models.Model):
 
     def __str__(self):
         return f"Backup: {self.department.name} | {self.created_at}"
+    
+
+# academic/models.py (Add at the bottom)
+
+class SystemBackup(models.Model):
+    name = models.CharField(max_length=255, help_text="Backup er ekta nam din (e.g., Before Midterm)")
+    backup_data = models.TextField(help_text="Full database snapshot in JSON format")
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    # এই লাইনটা আপডেট হবে
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.name} - {self.created_at.strftime('%Y-%m-%d %H:%M')}"
